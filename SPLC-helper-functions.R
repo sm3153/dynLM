@@ -183,3 +183,105 @@ cutLMnewdata <- function (data, outcome, LM, horizon, covs, format = c("wide",
                        covs$varying, "LM"), names(LMdat))
   return(LMdat[, cols])
 }
+
+
+
+#########################################################################
+#### PRINT FUNCTIONS FOR COEFFICIENTS OF MODELS  ####
+#########################################################################
+
+CI <- function(mu, se, n_dec){
+  paste("(",round(mu-1.96*se,n_dec),", ",round(mu+1.96*se,n_dec),")",sep="")
+}
+
+
+# -----------------------------------------------------------------------
+# For CSC model with all three coxph models using the same covars
+# -----------------------------------------------------------------------
+get_coef_info <- function(fm, n_dec, CI=TRUE, pVal=FALSE){
+  bet <- lapply(1:3,function(i) fm$models[[i]]$coefficients)
+  
+  # Get coefficients and desired quantities
+  if(CI){
+    se <- lapply(1:3,function(i) summary(fm$models[[i]])$coefficients[,4])
+    coef_info <- data.frame(
+      bet1=bet[[1]],bet2=bet[[2]],bet3=bet[[3]],
+      CI1 = CI(bet1,se[[1]],n_dec),
+      CI2 = CI(bet2,se[[2]],n_dec),
+      CI3 = CI(bet3,se[[3]],n_dec)
+    ) %>%
+      transmute(
+        # `Coef 1`=round(bet1, n_dec), 
+        `HR 1`=exp(bet[[1]]), 
+        `95% CI 1`=CI1,
+        # `Coef 2`=round(bet2, n_dec), 
+        `HR 2`=exp(bet[[2]]), 
+        `95% CI 2`=CI2,
+        # `Coef 3`=round(bet3, n_dec), 
+        `HR 3`=exp(bet[[3]]), 
+        `95% CI 3`=CI3
+      )
+    coef_info <- coef_info[ order(row.names(coef_info)), ]
+    
+  } else if (pVal) {
+    pval <- lapply(1:3,function(i) summary(fm$models[[i]])$coefficients[,6])
+    coef_info <- data.frame(
+      # `Coef 1`=bet[[1]], 
+      `HR 1`=exp(bet[[1]]), `p-value 1`=pval[[1]],
+      # `Coef 2`=bet[[2]], 
+      `HR 2`=exp(bet[[2]]), `p-value 2`=pval[[2]],
+      # `Coef 3`=bet[[3]], 
+      `HR 3`=exp(bet[[3]]), `p-value 3`=pval[[3]]
+    ) 
+    coef_info <- round(coef_info[ order(row.names(coef_info)), ],n_dec)
+  }
+  
+  # # Get AIC and BIC
+  # aic <- lapply(1:3,function(i) round(AIC(fm$models[[i]]),n_dec))
+  # bic <- lapply(1:3,function(i) round(BIC(fm$models[[i]]),n_dec))
+  # model_info <- as.data.frame(matrix(
+  #   c("","",aic[[1]],bic[[1]],"","",aic[[2]],bic[[2]],"","",aic[[3]],bic[[3]]),
+  #   ncol = 6,
+  #   dimnames = list(c("AIC:","BIC:"),
+  #                   colnames(coef_info))))
+  # coef_info <- rbind(coef_info, model_info)
+  
+  # Combine and format
+  coef_info <- coef_info %>% 
+    addHtmlTableStyle(col.rgroup = c("none", "#F7F7F7")) %>%
+    htmlTable(align = "rrrr",
+              cgroup=c("Cause 1: SPLC","Cause 2: IPLC death","Cause 3: Other-cause death"),
+              n.cgroup=c(2,2,2),
+              # tspanner = c("","Model information criteria:"),
+              n.tspanner = c(nrow(coef_info)-2,2)) #,
+  return(coef_info)
+}
+
+
+# -----------------------------------------------------------------------
+# For a single coxph model (one of the cause-specific functions)
+# -----------------------------------------------------------------------
+get_coef_info2 <- function(fm, cause, n_dec, CI=TRUE, pVal=FALSE){
+  coef_info <- data.frame(
+    Coef = fm$coefficients,
+    pval = summary(fm)$coefficients[,6]
+  ) 
+  coef_info <- round(coef_info[ order(row.names(coef_info)), ],n_dec)
+  
+  # Get AIC and BIC
+  model_info <- as.data.frame(matrix(
+    c("","",round(AIC(fm),n_dec),round(BIC(fm),n_dec)),
+    ncol = 2,
+    dimnames = list(c("AIC:","BIC:"),
+                    colnames(coef_info))))
+  
+  # Combine and format
+  coef_info <- rbind(coef_info, model_info)
+  coef_info <- coef_info %>% 
+    addHtmlTableStyle(col.rgroup = c("none", "#F7F7F7")) %>%
+    htmlTable(align = "rr",
+              tspanner = c("","Model information criteria:"),
+              n.tspanner = c(nrow(coef_info)-2,2),
+              caption=paste("Cause:",cause))
+  return(coef_info)
+}

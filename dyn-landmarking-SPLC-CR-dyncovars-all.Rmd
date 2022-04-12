@@ -92,10 +92,6 @@ pred_covars <- covars[2:length(covars)]
 
 
 ```{r super-data-set}
-source("dyn-landmarking.R")
-source("SPLC-helper-functions.R")
-
-
 # Stack datasets
 LMdata <- cutLMsuper(MEC, outcome, LMs, w, covs, format="wide")
 # Update LM-varying covariates (user created function update)
@@ -109,9 +105,8 @@ str(LMdata)
 ## Build the predictive model
 
 
-Fit the supermodel using all of the covariates on the super dataset:
+Fit the supermodel using all of the covariates on the super dataset. Note that `LMdata$allLMcovars` gives all the covariates with LM interaction (`LMdata$LMcovars` are these same covariates but without interaction). A subset of these variables can be used.
 
-TODO: add section of variables to be included in final model
 ```{r}
 model_covars <- LMdata$allLMcovars
 print(model_covars)
@@ -143,78 +138,75 @@ get_coef_info(LMsupercsc2$superfm, n_dec, CI=FALSE, pVal=TRUE)
 ### Visualising the changing hazard ratios for different covariates
 
 ```{r plot-dyn-HR}
-source("dyn-landmarking.R")
-source("SPLC-helper-functions.R")
 plot_dynamic_HR(LMsupercsc2, end_time=3, CI=TRUE)
 ```
 
 
 ## Prediction
 
+A prediction is made for an individual at a specific prediction time (e.g., at baseline, at 2 years, etc). Thus both an individual and a prediction (landmark) time must be given. The $w$-year risk is predicted ($w$ is set when fitting the model).  
+
 ### Create newdata
-New data is a dataframe with individual covariates associated with a LMing time point (i.e. covariates updated for the LMing time-point).
+
+New data is a dataframe with individual covariates associated with a LMing time point (i.e. covariates updated for the LMing time-point). Only the covariates used in the model need to be provided. E.g., this can be an entry from the very original data frame. Note that cutLM/cutLMsuper can be used to create these individuals for later prediction time points. 
+
+New data can be entire dataframes associated with one LM-time, for e.g., as follows: 
 
 ```{r newdata}
-source("dyn-landmarking.R")
-source("SPLC-helper-functions.R")
-times <- c(0,1,2)
+times1 <- c(0,1,2)
 
 # update time varying covariates for each of these prediction points 
 # use a custom function cutLMnewdata which is the same at cutLM but without censoring time at prediction window
-newdata <- lapply(times, 
+newdata1 <- lapply(times1, 
                   function(t){ 
-                    update(cutLMnewdata(MEC, outcome, t, t+w, covs, format="wide")) #%>% 
-                     #select(ID_secLung, Time, event, all_of(pred_covars), LM)
+                    update(cutLMnewdata(MEC, outcome, t, t+w, covs, format="wide"))
                     }
                   ) 
 
-head(newdata[[1]])
+print("Data on which to perform 5-year risk prediction at 1 year:")
+head(newdata1[[2]])
 ```
 
-TODO: head of newdata, tutorial style
+New data can be whole dataframes associated with multiple times, where one LM/prediction time is given for each row. Here we also make predictions at 0,1,2 years but store all the data together.
+
+```{r}
+option2 <- cutLMsuper(MEC, outcome, times1, w, covs, "wide")
+newdata2 <- option2$LMdata
+times2 <- newdata2$LM
+
+head(newdata2)
+head(times2)
+```
+
 
 
 #### Get predictions for each individual
 
+Predictions can be made on either form: 
+
 ```{r get-ind-preds-all, eval=F}
-source("dyn-landmarking.R")
+risks1 <- list()
 
-# Rprof("file.out")
-
-## Get prediction for each individual
-preds <- list()
-
-for (t in 1:length(times)){
-  tLM <- times[t]
-  newdat <- newdata[[t]][,]
+for (t in 1:length(times1)){
+  tLM <- times1[t]
+  newdat <- newdata1[[t]][,]
   
   risks <- predLMrisk(LMsupercsc2, newdat, tLM, cause=1)
-
-  preds[[t]] <- risks
+  risks1[[t]] <- risks
 }
-
-# Rprof(NULL)
-# summaryRprof("file.out")
-
 ```
 
-```{r}
-source("dyn-landmarking.R")
-    
-   # Rprof("file.out")
-
-newdat <- cutLMsuper(MEC, outcome, times, w, covs, "wide")
-risks1 <- predLMrisk(LMsupercsc2, newdat$LMdata, newdat$LMdata$LM, cause=1)
-
-  # Rprof(NULL)
-  # summaryRprof("file.out")
+```{r get-preds-all}
+risks2 <- predLMrisk(LMsupercsc2, newdata2, times2, cause=1)
 ```
 
 
 ### Calibration: quantile-based calibration plot
 
+This function builds on `calPlot` from the `pec` library. The object from `predLMrisk` already stores the time at which the prediction was made and the prediction window, so these do not need to be input. A named list of prediction objects from `predLMrisk` allows for comparison between models.  
+
 ```{r lib-pec, warning=F, message=F}
-library(pec) #overrides cindex of dynpred!
+library(pec) 
 ```
 
 ```{r quantile-calib}
@@ -227,22 +219,22 @@ YLIM=XLIM=c(0,0.2)
 # risks2$preds$risk = risks2$preds$risk + 0.03
 
 par(mfrow=c(1,3),pty="s")
-outlist = LMcalPlot(list("LM"=risks1), cause=1, method=method, q=q ,ylim=YLIM, xlim=XLIM)#,"LM2"=risks2
+outlist = LMcalPlot(list("LM"=risks2), cause=1, method=method, q=q ,ylim=YLIM, xlim=XLIM) #,"LM2"=risks2
 
 ```
 
 
 ### AUCt and Brier Score 
+Similarly, time-dependent AUC and Brier Score can be computed. 
 
 Extract in a data frame:
 ```{r data-tab, message=F,warning=F}
 library(data.table)
 ```
 
-
 ```{r LMScore, warning=F}
-l2 = LMScore(list("LM1"=risks1), cause=1)
-# print(l2)
+l2 = LMScore(list("LM1"=risks2), cause=1)
+print(l2)
 ```
 
 
@@ -266,11 +258,11 @@ for(t in 1:length(times)){
 
 ### Individual risk score trajectories
 
+Individual risk score trajectories can be plotted. As with `predLMrisk`, the data input is in the form of the original data. For example:
 
 ```{r choose-inds}
 idx <- c(5, 383, 880, 1044)
-idx <- 880
-# kable(MEC[idx,])
+kable(MEC[idx,])
 ```
 
 ```{r, include=F, eval=F}
@@ -279,11 +271,9 @@ idx <- 880
 ```
 
 
-We turn our data into long-form data to plot: 
+We turn our data into long-form data to plot: (wide-form can be used too)
 
 ```{r prep-long-data}
-source("dyn-landmarking.R")
-source("SPLC-helper-functions.R")
 # Prediction time points
 x = seq(0,9,by=0.02)
 
@@ -294,22 +284,8 @@ dat = update(dat)
 head(dat$LMdata)
 ```
 
-TODO: print dat, explain what it should look like/what to prepare
-
-Note that purple and blue both change from USPSTF2=1 to USPSTF2=0 ($\Rightarrow$ change in form of risk score).
-
-```{r plotRiskScore}
-# source("dyn-landmarking.R")
-# source("SPLC-helper-functions.R")
-# 
-# plotRiskScore(LMsupercsc2$superfm, dat$LMdata, rep(LMdata$func_covars, 3), rep(LMdata$func_LMs,3), 
-#             format="long", LM_col = "LM", id_col="ID_secLung", cause=1)
-```
 
 ```{r plotRisk}
-source("dyn-landmarking.R")
-source("SPLC-helper-functions.R")
-
 plotRisk(LMsupercsc2, dat$LMdata,
             format="long", LM_col = "LM", id_col="ID_secLung", cause=1,ylim=c(0,0.8))
 

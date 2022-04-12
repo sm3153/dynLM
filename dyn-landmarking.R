@@ -18,15 +18,17 @@
 #                      time-varying covariates, respectively
 # - format	         : Character string specifying whether the original data are in wide (default) or in long format
 # - id	             : Character string specifying the column name in data containing the subject id; only needed if format="long"
-# - rtime	           : Character string specifying the column name in data containing the (running) time variable associated 
+# - rtime	           : Character string specifying the column name in data containing the (running) time variable associated; only needed if format="long"
 # - right	           : Boolean (default=TRUE), indicating if the intervals for the time-varying covariates are closed on the 
 #                      right (and open on the left) or vice versa, see cut
 # -----------------------------------------------------------------------
 # Output: 
-# LMdata             : A stacked landmark data set, containing the outcome and the values of time-fixed and time-varying covariates 
-#                      taken at the landmark time points. The value of the landmark time point is stored in column LM.
+# LMdata             : An object of class "LM.data.frame". This has various attributes
+# - $LMdata: containing the stacked data set, i.e., the outcome and the values of time-fixed and time-varying covariates taken at the landmark time points. The value of the landmark time point is stored in column LM.
+# - $outcome: same as input
+# - $w: same as input
 # -----------------------------------------------------------------------
-cutLMsuper <- function(data, outcome, LMs, w, covs, format = c("wide", "long"), id, rtime, right = TRUE){
+cutLMsuper <- function(data, outcome, LMs, w, covs, format = c("wide", "long"), id, rtime, right=T){
   if (format == "wide"){
     LMdata <- cutLM(data=data,
                     outcome=outcome,
@@ -74,16 +76,19 @@ cutLMsuper <- function(data, outcome, LMs, w, covs, format = c("wide", "long"), 
 # TODO: add _1, _2 explanation and attributes
 # -----------------------------------------------------------------------
 # Input:
-# - LMdata           : Data frame with individual information and a column LM
-# - LMcovars         : Covariates that are to have a LM interaction
-# - func_covars, func_LMs   : LM time-interaction functions for the model.
+# - LMdata           : An object of class "LM.data.frame", this can be created by running cutLMsuper, or creating a stacked data set and storing it in a list with attributes outcome and w
+# - LMcovars         : List of ovariates that are to have a LM interaction
+# - func_covars      : A list of functions to use for interactions between LMs and covariates. If fitting a coxph model, the list has length 1, e.g. list(c(f1,f2,f3)). If fitting a CSC model, the list can have length 1 or length=number of causes, if different interactions are desired for different causes. 
+# - func_LMs         : A list of functions to use for transformations of the LMs. Its form is analogous to func_covars. 
 # -----------------------------------------------------------------------
 # Output:
-# LMdata             : A LM super dataset containing LM time-interactions 
-# TODO: description
-# # model covariates include LM-time interactions (what is used in the fitted model)
-# model_covars <- attr(LMdata,"model_covars") 
-# # pred covariates are what are used for predictions (i.e. patient info without LM-time interactions)
+# LMdata             :  An object of class "LM.data.frame" which has the following components: 
+# - LMdata: The LM super dataset which now also contains LM time-interactions.
+# - w, outcome: (already)
+# - func_covars: as the input
+# - func_LMs: as the input
+# - LMcovars: as the input
+# - allLMcovars: a list of covariates that include LM-time interactions, i.e. if cov was in LMcovars, allLMcovars will contain cov_1, cov_2, ..., cov_i if there are i func_covars interactions
 # -----------------------------------------------------------------------
 addLMtime <- function(LMdata, LMcovars, func_covars=NULL, func_LMs=NULL){
   data <- LMdata$LMdata
@@ -130,11 +135,33 @@ addLMtime <- function(LMdata, LMcovars, func_covars=NULL, func_LMs=NULL){
   return(LMdata)
 }
 
+
+head.LM.data.frame <- function(LMdata){
+  print(head(LMdata$LMdata))
+}
+
 #########################################################################
 #### FIT LM-ING MODEL  ####
 #########################################################################
 
-# TODO: add description, add FGR?
+# -----------------------------------------------------------------------
+# fitLM : fit a coxph or CSC model to a LM super dataset 
+# -----------------------------------------------------------------------
+# Input:
+# - type             : "coxph" or "CSC"/"CauseSpecificCox"
+# - formula          : formula to be used. 
+# - LMdata           : An object of class "LM.data.frame", this can be created by running cutLMsuper and addLMtime
+# -----------------------------------------------------------------------
+# Output:
+# An object of class "LMcoxph" or "LMCSC" with components
+# - superfm: fitted model
+# - type: as input
+# - w, func_covars, func_LMs, LMcovars, allLMcovars, outcome: as in LMdata
+# - LHS: the LHS of the input formula, stored for later use in calibration/discrimination
+# -----------------------------------------------------------------------
+# TODO: add FGR?
+# TODO: handle formulas that use ~ ., etc (use all with LM-interaction)
+# TODO: store LMdata somehow for NULL prediction later
 fitLM <- function(type, formula, LMdata, ...){
   LHS = Reduce(paste, deparse(formula[[2]]))
 
@@ -156,112 +183,10 @@ fitLM <- function(type, formula, LMdata, ...){
            w = LMdata$w,
            func_covars=LMdata$func_covars, func_LMs=LMdata$func_LMs, 
            LMcovars=LMdata$LMcovars, allLMcovars=LMdata$allLMcovars,
-           LHS=LHS, outcome=LMdata$outcome)
+           outcome=LMdata$outcome, LHS=LHS)
   class(out)=cl
   
   return(out)
-}
-
-
-
-#########################################################################
-#### PRINT FUNCTIONS FOR COEFFICIENTS OF MODELS  ####
-#########################################################################
-
-CI <- function(mu, se, n_dec){
-  paste("(",round(mu-1.96*se,n_dec),", ",round(mu+1.96*se,n_dec),")",sep="")
-}
-
-
-# -----------------------------------------------------------------------
-# For CSC model with all three coxph models using the same covars
-# -----------------------------------------------------------------------
-get_coef_info <- function(fm, n_dec, CI=TRUE, pVal=FALSE){
-  bet <- lapply(1:3,function(i) fm$models[[i]]$coefficients)
-  
-  # Get coefficients and desired quantities
-  if(CI){
-    se <- lapply(1:3,function(i) summary(fm$models[[i]])$coefficients[,4])
-    coef_info <- data.frame(
-      bet1=bet[[1]],bet2=bet[[2]],bet3=bet[[3]],
-      CI1 = CI(bet1,se[[1]],n_dec),
-      CI2 = CI(bet2,se[[2]],n_dec),
-      CI3 = CI(bet3,se[[3]],n_dec)
-    ) %>%
-      transmute(
-        # `Coef 1`=round(bet1, n_dec), 
-        `HR 1`=exp(bet[[1]]), 
-        `95% CI 1`=CI1,
-        # `Coef 2`=round(bet2, n_dec), 
-        `HR 2`=exp(bet[[2]]), 
-        `95% CI 2`=CI2,
-        # `Coef 3`=round(bet3, n_dec), 
-        `HR 3`=exp(bet[[3]]), 
-        `95% CI 3`=CI3
-      )
-    coef_info <- coef_info[ order(row.names(coef_info)), ]
-    
-  } else if (pVal) {
-    pval <- lapply(1:3,function(i) summary(fm$models[[i]])$coefficients[,6])
-    coef_info <- data.frame(
-      # `Coef 1`=bet[[1]], 
-      `HR 1`=exp(bet[[1]]), `p-value 1`=pval[[1]],
-      # `Coef 2`=bet[[2]], 
-      `HR 2`=exp(bet[[2]]), `p-value 2`=pval[[2]],
-      # `Coef 3`=bet[[3]], 
-      `HR 3`=exp(bet[[3]]), `p-value 3`=pval[[3]]
-    ) 
-    coef_info <- round(coef_info[ order(row.names(coef_info)), ],n_dec)
-  }
-  
-  # # Get AIC and BIC
-  # aic <- lapply(1:3,function(i) round(AIC(fm$models[[i]]),n_dec))
-  # bic <- lapply(1:3,function(i) round(BIC(fm$models[[i]]),n_dec))
-  # model_info <- as.data.frame(matrix(
-  #   c("","",aic[[1]],bic[[1]],"","",aic[[2]],bic[[2]],"","",aic[[3]],bic[[3]]),
-  #   ncol = 6,
-  #   dimnames = list(c("AIC:","BIC:"),
-  #                   colnames(coef_info))))
-  # coef_info <- rbind(coef_info, model_info)
-  
-  # Combine and format
-  coef_info <- coef_info %>% 
-    addHtmlTableStyle(col.rgroup = c("none", "#F7F7F7")) %>%
-    htmlTable(align = "rrrr",
-              cgroup=c("Cause 1: SPLC","Cause 2: IPLC death","Cause 3: Other-cause death"),
-              n.cgroup=c(2,2,2),
-              # tspanner = c("","Model information criteria:"),
-              n.tspanner = c(nrow(coef_info)-2,2)) #,
-  return(coef_info)
-}
-
-
-# -----------------------------------------------------------------------
-# For a single coxph model (one of the cause-specific functions)
-# -----------------------------------------------------------------------
-get_coef_info2 <- function(fm, cause, n_dec, CI=TRUE, pVal=FALSE){
-  coef_info <- data.frame(
-    Coef = fm$coefficients,
-    pval = summary(fm)$coefficients[,6]
-  ) 
-  coef_info <- round(coef_info[ order(row.names(coef_info)), ],n_dec)
-  
-  # Get AIC and BIC
-  model_info <- as.data.frame(matrix(
-    c("","",round(AIC(fm),n_dec),round(BIC(fm),n_dec)),
-    ncol = 2,
-    dimnames = list(c("AIC:","BIC:"),
-                    colnames(coef_info))))
-  
-  # Combine and format
-  coef_info <- rbind(coef_info, model_info)
-  coef_info <- coef_info %>% 
-    addHtmlTableStyle(col.rgroup = c("none", "#F7F7F7")) %>%
-    htmlTable(align = "rr",
-              tspanner = c("","Model information criteria:"),
-              n.tspanner = c(nrow(coef_info)-2,2),
-              caption=paste("Cause:",cause))
-  return(coef_info)
 }
 
 
@@ -270,7 +195,7 @@ get_coef_info2 <- function(fm, cause, n_dec, CI=TRUE, pVal=FALSE){
 #########################################################################
 
 # ----------------------------------------------------------
-# Helper function: calculate SE for time varying log HR
+# find_se: Helper function to calculate SE for time varying log HR
 # of the form coef[1] + t*coef[2] + t^2*coef[2] + ..
 # ----------------------------------------------------------
 find_se <- function(t, coefs, covar, func_covars){
@@ -287,21 +212,17 @@ find_se <- function(t, coefs, covar, func_covars){
 
 
 # -----------------------------------------------------------------------
-# Plots the dynamic hazard ratio
+# plot_dynamic_HR: Plots the dynamic hazard ratio
 # -----------------------------------------------------------------------
 # Input:
-# - superfm               : fitted cox supermodel
-#                      Note: variables must be 
-# - covars           : variables to plot the HR of
+# - superfm          : An object of class "LMcoxph" or "LMCSC", i.e. a fitted supermodel
+# - covars           : variables to plot the HR of  (note these must be given without time interaction label, for e.g., as in LMcovars)
 # - end_time         : final time point to plot HR
 # - CI               : include confidence intervals or not
 # - cause            : cause of interest if class(fm) is CSC
-# NOTE: covars are a vector of the form c(var1, var2, var3, ...)
-#       names of varibales in the fm must be of the form var1_1, var1_2, var1_3, var2_1, etc 
-#       for the LM-varing effects
-#       - This occurs if previous code was implemented similarly
 # -----------------------------------------------------------------------
-# plot_dynamic_HR(LMsupercsc2, covars=LMdata$LMcovars, end_time=3, CI=TRUE)
+# TODO: for non-binary variables allow for choice of value (instead of assumed=1)
+# TODO: change to base R plots
 plot_dynamic_HR <- function(superfm, covars=NULL, end_time=3, CI=FALSE, cause=NULL){
   fm = superfm$superfm
   
@@ -427,21 +348,22 @@ riskScore <- function(fm, tt, data, func_covars, func_LM, cause=NULL)
 
 
 # -----------------------------------------------------------------------------
-# predLMsurv: Custom-made function to calculate dynamic survival prediction
-#       one dynamic survival prediction is made per individual and time point 
-#       i.e. length(tt) == nrow(newdata)
-#            prediction for newdata[i,] made at time tt[i]
+# predLMsurv: Custom-made function to calculate w-year survival from a LM point
 # -----------------------------------------------------------------------------
 # INPUT:
-# - superfm      :  fitted LM supermodel (coxph or CSC) # TODO
+# - fm      :  fitted LM supermodel 
 # - newdata :  dataframe of individuals to make predictions for. 
 #              Must contain the original covariates.
-#              Must have same length as tt as one prediction is made for each pair newdata[i,],tt[i]
-# - tt      :  time points at which to predict survival of w more years
-# - w       :  prediction window
-# OUTPUT:
-# - Fw : dataframe with columns of time and dynamic survival prediction
+# - tt      :  time points at which to predict risk of w more years. Note tt must be one value for the whole dataframe newdata or must have the same length as the number of rows of newdata (each datapoint is associated with one LM/prediction time point).
 # -----------------------------------------------------------------------------
+# OUTPUT: An object of class "LMpred" with components:
+# - preds: a dataframe with columns time and risk, each entry corresponds to one individual and prediction time point
+# - w, type, LHS: as in the fitted super model
+# - data: the newdata, stored for calibration/discrimination 
+# -----------------------------------------------------------------------------
+# TODO: handle null newdata
+# TODO: run and test again
+# TODO: allow for different prediction window than w (with a warning)
 predLMsurv <- function(superfm, newdata, tt)
 {
   func_covars <- superfm$func_covars
@@ -524,23 +446,25 @@ predLMsurv <- function(superfm, newdata, tt)
 
 
 # -----------------------------------------------------------------------------
-# predLMrisk: Custom-made function to calculate (cause-specific) risk 
+# predLMrisk: Custom-made function to calculate (cause-specific) w-year risk from a LM point
 # -----------------------------------------------------------------------------
 # INPUT:
 # - fm      :  fitted LM supermodel 
 # - newdata :  dataframe of individuals to make predictions for. 
 #              Must contain the original covariates.
-#              Must have same length as tt as one prediction is made for each pair newdata[i,],tt[i]
-# - tt      :  time points at which to predict risk of w more years
-# - w       :  prediction window
-# - func_covars, func_LM : Time-interaction functions for the model.
-# - cause   :  cause of interest; only for CSC
-# OUTPUT:
-# - Fw : dataframe with columns of time and dynamic risk prediction
+# - tt      :  time points at which to predict risk of w more years. Note tt must be one value for the whole dataframe newdata or must have the same length as the number of rows of newdata (each datapoint is associated with one LM/prediction time point).
+# - cause   :  cause of interest
 # -----------------------------------------------------------------------------
+# OUTPUT: An object of class "LMpred" with components:
+# - preds: a dataframe with columns time and risk, each entry corresponds to one individual and prediction time point
+# - w, type, LHS: as in the fitted super model
+# - data: the newdata, stored for calibration/discrimination 
+# -----------------------------------------------------------------------------
+# TODO: handle null newdata
+# TODO: allow for different prediction window than w (with a warning)
 predLMrisk <- function(superfm, newdata, tt, cause=NULL)
 {
-  #TODO: check superfm is correct 
+  # TODO: check superfm/args are correct 
   
   func_covars <- superfm$func_covars
   func_LM <- superfm$func_LM
@@ -645,7 +569,8 @@ predLMrisk <- function(superfm, newdata, tt, cause=NULL)
   
   preds = data.frame(time=tt,risk=Fw)
   
-  out = list(preds=preds, w=w, type=type, data=newdata, LHS=superfm$LHS)
+  out = list(preds=preds, w=w, type=type, LHS=superfm$LHS, data=newdata)
+  class(out) = "LMpred"
   return(out)
 }
 
@@ -655,15 +580,22 @@ predLMrisk <- function(superfm, newdata, tt, cause=NULL)
 
 
 # -----------------------------------------------------------------------------
-# LMcalPlot: TODO: DESCRIPTION
+# LMcalPlot: Calibration plots for dynamic risk prediction models
 # -----------------------------------------------------------------------------
 # INPUT:
-# Preds is named list of 
-# OUTPUT:
+# - preds: A named list of prediction models, where allowed entries are outputs from predLMsurv/predlMrisk
+# - cause: Cause of interest
+# - plot : If FALSE, do not plot the results, just return a plottable object.
+# - sub  : If TRUE, add a subheading with the number of individuals at risk, and the number that under the event of interest
+# - ...  : Additional arguments to pass to calPlot
 # -----------------------------------------------------------------------------
+# OUTPUT:
+# - List of plots of w-year risk, one entry per LM/prediction time point
+# -----------------------------------------------------------------------------
+# TODO: Add option to show AUCt, Brier on plot
 LMcalPlot <- function(preds,cause=1,..., plot=T,main=NULL,sub=T){
-  # TODO: add functionality to do multiple preds
-  # TODO: check data for all preds is the same
+  # TODO: check data+formula+times+w for all preds is the same
+  
   times = unique(preds[[1]]$preds$time)
   w = preds[[1]]$w
   LHS = preds[[1]]$LHS
@@ -715,8 +647,9 @@ LMcalPlot <- function(preds,cause=1,..., plot=T,main=NULL,sub=T){
 #########################################################################
 #### DISCRIMINATION ####
 #########################################################################
+
 # -----------------------------------------------------------------------------
-# print.LMScore: TODO: DESCRIPTION
+# print.LMScore: custom print function for objects of class "LMScore"
 # -----------------------------------------------------------------------------
 print.LMScore <- function(x,digits=3){
   
@@ -764,14 +697,22 @@ print.LMScore <- function(x,digits=3){
 }
 
 # -----------------------------------------------------------------------------
-# LMScore: TODO: DESCRIPTION
+# LMScore: Methods (AUCt, Brier) to score the predictive performance of dynamic risk markers from LM super models
 # -----------------------------------------------------------------------------
 # INPUT:
-# Preds is named list of 
-# OUTPUT:
+# - preds: A named list of prediction models, where allowed entries are outputs from predLMsurv/predlMrisk
+# - cause: Cause of interest
+# - metrics : Character vector specifying which metrics to apply. Choices are "auc" and "brier". Case matters.
+# - ...  : Additional arguments to pass to Score
+# -----------------------------------------------------------------------------
+# OUTPUT: An object of class "LMScore", which has components:
+# - dataframe auct if "auc" was a metric
+# - dataframe briert if "brier" was a metric
+# - w: from preds, prediction window of interest
 # -----------------------------------------------------------------------------
 LMScore <- function(preds,cause=1,metrics=c("auc","brier"), ...){
-    # TODO: check data for all preds is the same
+  # TODO: check data+formula+times+w for all preds is the same
+
   times = unique(preds[[1]]$preds$time)
   w = preds[[1]]$w
   LHS = preds[[1]]$LHS
@@ -817,15 +758,15 @@ LMScore <- function(preds,cause=1,metrics=c("auc","brier"), ...){
 #           an event of interest within a window 
 # -----------------------------------------------------------------------------
 # INPUT:
-# - fm      :  Fitted model (coxph)
-# - data    :  Data frame from which to plot risk score
+# - fm      :  Fitted LM super model 
+# - data    :  Data frame of individuals from which to plot risk 
 # - w       :  Prediction window
-# - func_covars, func_LM : LM time-interaction functions for the model.
-# - format  :  Character string specifying whether the original data are in wide (default) or in long format
+# - format  :  Character string specifying whether the data are in wide (default) or in long format
 # - LM_col  :  Character string specifying the column name in data containing the (running) time variable 
 #              associated with the time-varying covariate(s); only needed if format="long"
 # - id_col  :  Character string specifying the column name in data containing the subject id; only needed if format="long"
-# - cause   :  The cause we are looking at, only needed if class(fm) == "CauseSpecificCox"
+# - cause   :  The cause we are looking at, only needed if class(fm) == "LMCSC"
+# - varing  :  character string specifying column name in the data containing time-varying covariates; only needed if format="wide"
 # -----------------------------------------------------------------------------
 plotRisk <- function(fm, data, format, LM_col=NULL, id_col=NULL, cause=1, varying,
                      pch,lty,lwd,col,main,xlab,ylab,...){
